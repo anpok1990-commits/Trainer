@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>AI-тренер</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: #0e0f12; --panel: rgba(0,0,0,.55); --text: #fff; --muted: #b9bcc6;
+    --accent: #3ddc84; --warn: #ffb020; --bad: #ff6b6b; --msg: #ffe680;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; overflow: hidden; }
+  .screen { position: fixed; inset: 0; display: none; }
+  .screen.on { display: flex; }
+
+  /* Стартовый экран */
+  #start { flex-direction: column; justify-content: center; padding: 24px 16px; gap: 18px;
+    max-width: 520px; margin: 0 auto; overflow-y: auto; }
+  h1 { margin: 0; font-size: 28px; }
+  .lead { color: var(--muted); margin: 0; line-height: 1.45; }
+  ol { margin: 0; padding-left: 20px; line-height: 1.55; color: var(--muted); }
+  .goal { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .goal button { flex: 1; min-width: 64px; }
+  button { border: 0; border-radius: 12px; padding: 14px 16px; font-size: 17px; font-weight: 600;
+    background: #262a33; color: var(--text); cursor: pointer; }
+  button.sel { outline: 2px solid var(--accent); }
+  button.primary { background: var(--accent); color: #062b14; font-size: 19px; }
+  #startErr { color: var(--bad); min-height: 1.2em; margin: 0; }
+
+  /* Тренировка */
+  #train { flex-direction: column; }
+  #stage { position: relative; flex: 1; min-height: 0; }
+  #canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #video { display: none; }
+  .top { position: absolute; left: 0; right: 0; top: 0; padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+    background: linear-gradient(var(--panel), transparent); display: flex; justify-content: space-between; align-items: baseline; }
+  #count { font-size: 34px; font-weight: 700; }
+  #status { color: var(--muted); font-size: 14px; text-align: right; }
+  #hint { position: absolute; left: 16px; right: 70px; top: calc(64px + env(safe-area-inset-top)); color: var(--bad); font-size: 16px; font-weight: 600; }
+  #bar { position: absolute; right: 16px; top: 22%; bottom: 26%; width: 22px; border: 2px solid #777; border-radius: 6px; overflow: hidden; display: none; }
+  #fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0; background: var(--warn); }
+  #mark { position: absolute; left: -2px; right: -2px; height: 3px; background: #fff; }
+  #msg { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 16px; text-align: center;
+    font-size: 22px; font-weight: 700; color: var(--msg); background: linear-gradient(transparent, var(--panel)); min-height: 72px; }
+  .controls { display: flex; gap: 8px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: #000; }
+  .controls button { flex: 1; font-size: 15px; padding: 12px 8px; }
+
+  /* Итог */
+  #done { position: absolute; inset: 0; background: rgba(0,0,0,.8); display: none; flex-direction: column;
+    justify-content: center; align-items: center; gap: 14px; padding: 16px; text-align: center; }
+  #done.on { display: flex; }
+  #doneText { font-size: 22px; line-height: 1.4; max-width: 420px; }
+  #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 18px; text-align: center; padding: 16px; }
+</style>
+</head>
+<body>
+
+<section id="start" class="screen on">
+  <h1>🏋️ AI-тренер</h1>
+  <p class="lead">Тренер смотрит через камеру, считает приседания и подсказывает, что поправить. Видео не уходит с телефона.</p>
+  <ol>
+    <li>Поставьте телефон вертикально у стены или на полку на уровне пояса.</li>
+    <li>Отойдите на 2–3 метра, чтобы было видно вас целиком, вместе со ступнями.</li>
+    <li>Встаньте прямо и замрите на секунду — тренер скажет «Начинаем».</li>
+    <li>Лицом к камере тренер следит за коленями, боком — за спиной.</li>
+  </ol>
+  <div>
+    <p class="lead" style="margin-bottom:8px">Приседаний в подходе:</p>
+    <div class="goal" id="goals">
+      <button data-goal="5">5</button><button data-goal="10" class="sel">10</button>
+      <button data-goal="15">15</button><button data-goal="20">20</button>
+    </div>
+  </div>
+  <button class="primary" id="go">Начать тренировку</button>
+  <p id="startErr"></p>
+</section>
+
+<section id="train" class="screen">
+  <div id="stage">
+    <video id="video" playsinline muted></video>
+    <canvas id="canvas"></canvas>
+    <div class="top"><div id="count">0 / 10</div><div id="status">Калибровка…</div></div>
+    <div id="hint"></div>
+    <div id="bar"><div id="fill"></div><div id="mark"></div></div>
+    <div id="msg"></div>
+    <div id="loading">Загружаю тренера…</div>
+    <div id="done"><div id="doneText"></div><button class="primary" id="again">Ещё подход</button></div>
+  </div>
+  <div class="controls">
+    <button id="flip">🔄 Камера</button>
+    <button id="restart">↺ Заново</button>
+    <button id="stop">✕ Стоп</button>
+  </div>
+</section>
+
+<script type="module">
+// ---------------------------------------------------------------------------
+// Настройки (как в версии для компьютера)
+// ---------------------------------------------------------------------------
+const MP_VERSION = "0.10.14";
+const MP_BASE = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}`;
+const params = new URLSearchParams(location.search);
+const MODEL_KIND = params.get("model") === "full" ? "full" : "lite";
+const MODEL_URL = `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${MODEL_KIND}/float16/1/pose_landmarker_${MODEL_KIND}.task`;
+
+const DEPTH_DOWN = 0.35, DEPTH_UP = 0.15, DEPTH_GOOD = 0.80;
+const KNEES_IN_RATIO = 0.85, LEAN_MAX_DEG = 55, MIN_REP_SEC = 1.0, VIS = 0.3;
+const L_SH = 11, R_SH = 12, L_HIP = 23, R_HIP = 24, L_KNEE = 25, R_KNEE = 26, L_ANK = 27, R_ANK = 28;
+const SKELETON = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,31],[28,32]];
+
+const PHRASES = {
+  calibrate: ["Встаньте прямо, чтобы я видел вас целиком"],
+  not_visible: ["Отойдите немного назад, мне не видно ваших ног", "Мне нужно видеть вас в полный рост"],
+  ready: ["Отлично, вижу вас. Начинаем приседания!", "Готово! Приседаем, я считаю."],
+  good: ["Хорошо!", "Отлично!", "Так держать!", "Красиво!", "Есть!"],
+  praise5: ["Отличная техника, продолжайте!", "Вы молодец, держите темп!"],
+  shallow: ["Глубже! Опускайтесь, пока бедро не станет параллельно полу", "Чуть ниже, это повторение не засчитано", "Не хватило глубины, давайте ниже"],
+  knees_in: ["Колени не заваливайте внутрь, ведите их по направлению носков", "Следите за коленями: разводите их наружу"],
+  lean: ["Держите грудь выше, не наклоняйтесь так сильно вперёд", "Спина ровнее, смотрите вперёд"],
+  fast: ["Помедленнее, контролируйте движение вниз", "Не торопитесь, опускайтесь плавно"],
+  done: ["Подход завершён! Отдохните минуту.", "Отлично поработали! Подход окончен, отдыхаем."],
+};
+const PRIORITY = ["done","not_visible","shallow","knees_in","lean","fast","ready","praise5","good","calibrate"];
+
+// ---------------------------------------------------------------------------
+// Геометрия
+// ---------------------------------------------------------------------------
+function pointOk(p) {
+  const inFrame = p.x >= -0.02 && p.x <= 1.02 && p.y >= -0.02 && p.y <= 1.02;
+  const v = p.visibility;
+  if (!v) return inFrame;              // уверенность не передана — проверяем только кадр
+  return inFrame && v >= VIS;
+}
+const visible = (lm, ...ids) => ids.every(i => pointOk(lm[i]));
+const PART_NAMES = { [L_SH]: "плечи", [R_SH]: "плечи", [L_HIP]: "таз", [R_HIP]: "таз",
+  [L_KNEE]: "колени", [R_KNEE]: "колени", [L_ANK]: "ступни", [R_ANK]: "ступни" };
+function missingParts(lm) {
+  const out = [];
+  for (const [i, n] of Object.entries(PART_NAMES)) if (!pointOk(lm[i]) && !out.includes(n)) out.push(n);
+  return out;
+}
+
+function measure(lm) {
+  const legs = [[L_HIP, L_KNEE, L_ANK], [R_HIP, R_KNEE, R_ANK]].filter(l => visible(lm, ...l));
+  if (!legs.length || !visible(lm, L_SH, R_SH)) return null;
+  const gap = legs.reduce((s, [h, k]) => s + (lm[k].y - lm[h].y), 0) / legs.length;
+  const sh = { x: (lm[L_SH].x + lm[R_SH].x) / 2, y: (lm[L_SH].y + lm[R_SH].y) / 2 };
+  const hip = { x: (lm[L_HIP].x + lm[R_HIP].x) / 2, y: (lm[L_HIP].y + lm[R_HIP].y) / 2 };
+  const torso = Math.hypot(sh.x - hip.x, sh.y - hip.y) + 1e-6;
+  const frontal = Math.abs(lm[L_SH].x - lm[R_SH].x) / torso > 0.45;
+  const lean = Math.atan2(Math.abs(sh.x - hip.x), Math.abs(hip.y - sh.y) + 1e-6) * 180 / Math.PI;
+  const kneeRatio = legs.length === 2
+    ? Math.abs(lm[L_KNEE].x - lm[R_KNEE].x) / (Math.abs(lm[L_ANK].x - lm[R_ANK].x) + 1e-6) : null;
+  return { gap, frontal, lean, kneeRatio };
+}
+
+// ---------------------------------------------------------------------------
+// Логика упражнения
+// ---------------------------------------------------------------------------
+class SquatLogic {
+  constructor(goal) { this.goal = goal; this.reset(); }
+  reset() { this.count = 0; this.bad = 0; this.state = "calibrate"; this.calib = []; this.standGap = null; this.depth = 0; this.rep = null; }
+  update(m, t) {
+    if (this.state === "done") return [];
+    if (!m) return ["not_visible"];
+    if (this.state === "calibrate") {
+      this.calib.push(m.gap); if (this.calib.length > 20) this.calib.shift();
+      if (this.calib.length === 20) {
+        const mean = this.calib.reduce((a, b) => a + b) / 20;
+        const sd = Math.sqrt(this.calib.reduce((a, b) => a + (b - mean) ** 2, 0) / 20);
+        if (sd < 0.01 && mean > 0.05) { this.standGap = mean; this.state = "up"; return ["ready"]; }
+      }
+      return ["calibrate"];
+    }
+    this.depth = Math.max(0, Math.min(1.2, 1 - m.gap / this.standGap));
+    let events = [];
+    if (this.state === "up") {
+      if (this.depth < DEPTH_UP) this.standGap = 0.98 * this.standGap + 0.02 * m.gap;
+      if (this.depth > DEPTH_DOWN) { this.state = "down"; this.rep = { start: t, maxDepth: this.depth, kneeRatio: null, lean: null }; }
+    }
+    if (this.state === "down") {
+      const r = this.rep;
+      if (this.depth >= r.maxDepth - 0.05) {
+        r.maxDepth = Math.max(r.maxDepth, this.depth);
+        if (m.frontal && m.kneeRatio !== null) r.kneeRatio = r.kneeRatio === null ? m.kneeRatio : Math.min(r.kneeRatio, m.kneeRatio);
+        if (!m.frontal) r.lean = Math.max(r.lean || 0, m.lean);
+      }
+      if (this.depth < DEPTH_UP) { this.state = "up"; events = this.finishRep(t); }
+    }
+    return events;
+  }
+  finishRep(t) {
+    const r = this.rep, errors = [];
+    if (r.maxDepth < DEPTH_GOOD) errors.push("shallow");
+    if (r.kneeRatio !== null && r.kneeRatio < KNEES_IN_RATIO) errors.push("knees_in");
+    if (r.lean !== null && r.lean > LEAN_MAX_DEG) errors.push("lean");
+    if (t - r.start < MIN_REP_SEC) errors.push("fast");
+    if (errors.includes("shallow")) { this.bad++; return errors; }
+    this.count++;
+    const ev = ["good", ...errors];
+    if (!errors.length && this.count % 5 === 0) ev.push("praise5");
+    if (this.count >= this.goal) { this.state = "done"; ev.push("done"); }
+    return ev;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Голос, звук, вибрация
+// ---------------------------------------------------------------------------
+const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
+let audioCtx = null, ruVoice = null;
+const canSpeak = "speechSynthesis" in window;
+function pickVoice() {
+  if (!canSpeak) return;
+  const vs = speechSynthesis.getVoices();
+  ruVoice = vs.find(v => /^ru/i.test(v.lang)) || null;
+}
+if (canSpeak) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+
+function unlockAudio() {           // браузеры разрешают звук только после нажатия
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (e) {}
+  if (canSpeak) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); }
+}
+function beep(freq, ms) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+  g.gain.setValueAtTime(0.2, audioCtx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + ms / 1000);
+  o.start(); o.stop(audioCtx.currentTime + ms / 1000);
+}
+function haptic(kind) {
+  try {
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred(kind);
+    else if (navigator.vibrate) navigator.vibrate(kind === "success" ? 60 : [60, 60, 60]);
+  } catch (e) {}
+}
+function say(text, urgent) {
+  if (!canSpeak) return;
+  if (speechSynthesis.speaking) { if (!urgent) return; speechSynthesis.cancel(); }
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "ru-RU"; if (ruVoice) u.voice = ruVoice; u.rate = 1.05;
+  speechSynthesis.speak(u);
+}
+
+// ---------------------------------------------------------------------------
+// Тренер: выбирает реплику
+// ---------------------------------------------------------------------------
+class Coach {
+  constructor() { this.text = ""; this.until = 0; this.last = {}; this.lastPhrase = {}; }
+  react(events, t, count) {
+    if (!events.length) return;
+    const ev = events.slice().sort((a, b) => PRIORITY.indexOf(a) - PRIORITY.indexOf(b))[0];
+    const cooldown = { not_visible: 4, calibrate: 5, good: 0 }[ev] ?? 2.5;
+    if (t - (this.last[ev] ?? -99) < cooldown) return;
+    this.last[ev] = t;
+    const opts = PHRASES[ev].filter(p => p !== this.lastPhrase[ev]);
+    let phrase = (opts.length ? opts : PHRASES[ev])[Math.floor(Math.random() * (opts.length || PHRASES[ev].length))];
+    this.lastPhrase[ev] = phrase;
+    let spoken = phrase;
+    if (ev === "good") { phrase = `${count}! ${phrase}`; spoken = String(count); }
+    else if (events.includes("good")) { phrase = `${count}. ${phrase}`; spoken = phrase; }
+    this.text = phrase; this.until = t + 3;
+    // звук и вибрация
+    if (events.includes("good")) { beep(880, 120); haptic(ev === "good" || ev === "praise5" || ev === "done" ? "success" : "warning"); }
+    else if (["shallow", "knees_in", "lean", "fast"].includes(ev)) { beep(300, 220); haptic("warning"); }
+    say(spoken, !["good", "calibrate"].includes(ev));
+  }
+  current(t) { return t < this.until ? this.text : ""; }
+}
+
+// ---------------------------------------------------------------------------
+// Приложение
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
+let goal = 10, logic, coach, landmarker = null, stream = null, facing = "user", running = false, lastTs = -1, t0 = 0;
+
+if (tg) {
+  tg.ready(); tg.expand();
+  try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
+  try { tg.setHeaderColor && tg.setHeaderColor("#0e0f12"); tg.setBackgroundColor && tg.setBackgroundColor("#0e0f12"); } catch (e) {}
+}
+
+$("goals").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  goal = +b.dataset.goal;
+  document.querySelectorAll("#goals button").forEach(x => x.classList.toggle("sel", x === b));
+});
+
+async function loadModel() {
+  if (landmarker) return landmarker;
+  const { FilesetResolver, PoseLandmarker } = await import(`${MP_BASE}/vision_bundle.mjs`);
+  const fileset = await FilesetResolver.forVisionTasks(`${MP_BASE}/wasm`);
+  const make = delegate => PoseLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MODEL_URL, delegate }, runningMode: "VIDEO", numPoses: 1 });
+  try { landmarker = await make("GPU"); }
+  catch (e) { console.warn("GPU недоступен, использую CPU", e); landmarker = await make("CPU"); }
+  return landmarker;
+}
+
+async function startCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } } });
+  video.srcObject = stream;
+  await video.play();
+}
+
+function show(id) { document.querySelectorAll(".screen").forEach(s => s.classList.toggle("on", s.id === id)); }
+
+$("go").addEventListener("click", async () => {
+  $("startErr").textContent = "";
+  unlockAudio();
+  logic = new SquatLogic(goal); coach = new Coach();
+  $("count").textContent = `0 / ${goal}`; $("done").classList.remove("on");
+  show("train"); $("loading").style.display = "flex"; $("loading").textContent = "Включаю камеру…";
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("nocam");
+    await startCamera();
+    $("loading").textContent = "Загружаю тренера… (первый раз до 10 секунд)";
+    await loadModel();
+  } catch (e) {
+    console.error(e);
+    show("start");
+    $("startErr").textContent = e.name === "NotAllowedError"
+      ? "Нет доступа к камере. Разрешите камеру для Telegram в настройках телефона и попробуйте снова."
+      : (e.message === "nocam" ? "Камера недоступна в этом браузере." : "Не удалось запустить: " + (e.message || e));
+    return;
+  }
+  $("loading").style.display = "none";
+  running = true; t0 = performance.now(); lastTs = -1;
+  requestAnimationFrame(loop);
+});
+
+$("flip").addEventListener("click", async () => {
+  facing = facing === "user" ? "environment" : "user";
+  try { await startCamera(); logic.reset(); } catch (e) { facing = facing === "user" ? "environment" : "user"; }
+});
+$("restart").addEventListener("click", () => { logic.reset(); coach = new Coach(); $("done").classList.remove("on"); });
+$("again").addEventListener("click", () => { logic.reset(); coach = new Coach(); $("done").classList.remove("on"); });
+$("stop").addEventListener("click", () => {
+  running = false;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (canSpeak) speechSynthesis.cancel();
+  show("start");
+});
+
+function drawSkeleton(lm, w, h, color) {
+  const pts = {};
+  lm.forEach((p, i) => { if (pointOk(p)) pts[i] = [p.x * w, p.y * h]; });
+  ctx.lineWidth = Math.max(3, w / 200); ctx.strokeStyle = color; ctx.lineCap = "round";
+  for (const [a, b] of SKELETON) if (pts[a] && pts[b]) { ctx.beginPath(); ctx.moveTo(...pts[a]); ctx.lineTo(...pts[b]); ctx.stroke(); }
+  ctx.fillStyle = "#fff";
+  for (const i in pts) if (i >= 11) { ctx.beginPath(); ctx.arc(...pts[i], Math.max(4, w / 250), 0, 7); ctx.fill(); }
+}
+
+function loop() {
+  if (!running) return;
+  if (video.readyState >= 2) {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (canvas.width !== w) { canvas.width = w; canvas.height = h; }
+    const t = (performance.now() - t0) / 1000;
+    const ts = Math.max(Math.round(performance.now()), lastTs + 1); lastTs = ts;
+    const res = landmarker.detectForVideo(video, ts);
+    const lm = res.landmarks && res.landmarks[0] ? res.landmarks[0] : null;
+    const m = lm ? measure(lm) : null;
+    const events = logic.update(m, t);
+    coach.react(events, t, logic.count);
+
+    const mirror = facing === "user";
+    ctx.save();
+    if (mirror) { ctx.translate(w, 0); ctx.scale(-1, 1); }     // как в зеркале
+    ctx.drawImage(video, 0, 0, w, h);
+    if (lm) drawSkeleton(lm, w, h, logic.state === "up" || logic.state === "down" ? "#3ddc84" : "#ffb020");
+    ctx.restore();
+
+    $("count").textContent = `${logic.count} / ${logic.goal}`;
+    $("status").textContent = { calibrate: "Калибровка…", up: "Готов", down: "Вниз…", done: "Подход завершён" }[logic.state];
+    $("hint").textContent = !lm ? "Человек не найден в кадре" : (!m ? "Не видно: " + missingParts(lm).join(", ") : "");
+    $("msg").textContent = coach.current(t);
+    const active = logic.state === "up" || logic.state === "down";
+    $("bar").style.display = active ? "block" : "none";
+    $("fill").style.height = `${Math.min(logic.depth, 1) * 100}%`;
+    $("fill").style.background = logic.depth >= DEPTH_GOOD ? "var(--accent)" : "var(--warn)";
+    $("mark").style.bottom = `${DEPTH_GOOD * 100}%`;
+    if (logic.state === "done" && !$("done").classList.contains("on")) {
+      $("doneText").innerHTML = `Подход завершён!<br>Засчитано: <b>${logic.count}</b><br>Не засчитано (неглубоко): <b>${logic.bad}</b>`;
+      $("done").classList.add("on");
+    }
+  }
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
